@@ -279,9 +279,9 @@ def _truncate_seq_tuple(tokens_a, tokens_b, tokens_c, max_length):
             tokens_a.pop()            
 
 
-def accuracy(out, labels):
-    outputs = np.argmax(out, axis=1)
-    return np.sum(outputs==labels)
+def accuracy(preds, labels):
+    assert len(preds) == len(labels)
+    return np.sum(np.array(preds)==np.array(labels))/len(preds)
 
 
 def construct_input_data(features):
@@ -300,6 +300,21 @@ def construct_input_data(features):
     all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
     all_label_ids = torch.tensor(label_id, dtype=torch.long)
     return (all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+
+
+def collapse_logits_to_answer(all_logits, all_label_ids, question_len_ls):
+    assert sum(question_len_ls)==len(all_logits) and len(all_logits)==len(all_label_ids)
+    preds, labels = [], []
+    curr = 0
+    for q_len in question_len_ls:
+        logits = all_logits[curr : curr+q_len]
+        label_ids = all_label_ids[curr : curr+q_len]
+        assert sum(label_ids)==1
+        pred = np.argmax(logits)
+        label = label_ids.index(1)
+        preds.append(pred)
+        labels.append(label)
+    return preds, labels
 
 
 def main():
@@ -533,11 +548,12 @@ def main():
                     optimizer.step()    # We have accumulated enought gradients
                     model.zero_grad()
                     global_step += 1
-
+            # 每个epoch结束评估验证集
             model.eval()
-            eval_loss, eval_accuracy = 0, 0
+            eval_loss = 0
             nb_eval_steps, nb_eval_examples = 0, 0
-            logits_all = []
+            all_logits = []
+            all_label_ids = []
             for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
                 input_ids = input_ids.to(device)
                 input_mask = input_mask.to(device)
@@ -547,21 +563,20 @@ def main():
                 with torch.no_grad():
                     tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids, n_class)
 
-                logits = logits.detach().cpu().numpy()
-                label_ids = label_ids.to('cpu').numpy()
-                for i in range(len(logits)):
-                    logits_all += [logits[i]]
-                
-                tmp_eval_accuracy = accuracy(logits, label_ids.reshape(-1))
+                logits = logits.detach().cpu().numpy()[:,1].tolist()
+                label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
+                all_logits.extend(logits)
+                all_label_ids.extend(label_ids)
 
                 eval_loss += tmp_eval_loss.mean().item()
-                eval_accuracy += tmp_eval_accuracy
 
                 nb_eval_examples += input_ids.size(0)
                 nb_eval_steps += 1
 
             eval_loss = eval_loss / nb_eval_steps
-            eval_accuracy = eval_accuracy / nb_eval_examples
+
+            preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, question_len_ls) #待补充
+            eval_accuracy = accuracy(preds, labels)
 
             if args.do_train:
                 result = {'eval_loss': eval_loss,
