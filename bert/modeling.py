@@ -26,6 +26,7 @@ import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
 
+
 def gelu(x):
     """Implementation of the gelu activation function.
         For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
@@ -378,11 +379,11 @@ class BertForSequenceClassification(nn.Module):
     logits = model(input_ids, token_type_ids, input_mask)
     ```
     """
-    def __init__(self, config, num_labels):
+    def __init__(self, config):
         super(BertForSequenceClassification, self).__init__()
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
+        self.classifier = nn.Linear(config.hidden_size, 2)
 
         def init_weights(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -396,14 +397,14 @@ class BertForSequenceClassification(nn.Module):
                 module.bias.data.zero_()
         self.apply(init_weights)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, labels=None, n_class=1):
-        seq_length = input_ids.size(2)
-        _, pooled_output = self.bert(input_ids.view(-1,seq_length),
-                                     token_type_ids.view(-1,seq_length),
-                                     attention_mask.view(-1,seq_length))
+    def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
+        # seq_length = input_ids.size(1)
+        _, pooled_output = self.bert(input_ids,
+                                     token_type_ids,
+                                     attention_mask)
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
-        logits = logits.view(-1, n_class)
+        # logits = logits.view(-1)
 
         if labels is not None:
             loss_fct = CrossEntropyLoss()

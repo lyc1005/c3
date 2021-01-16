@@ -152,15 +152,20 @@ class c3Processor(DataProcessor):
         for (i, d) in enumerate(data):
             for k in range(4):
                 if data[i][2+k] == data[i][6]:
-                    answer = str(k)
+                    answer = k
                     
-            label = tokenization.convert_to_unicode(answer)
+            # label = tokenization.convert_to_unicode(answer)
 
             for k in range(4):
                 guid = "%s-%s-%s" % (set_type, i, k)
                 text_a = tokenization.convert_to_unicode(data[i][0])
                 text_b = tokenization.convert_to_unicode(data[i][k+2])
                 text_c = tokenization.convert_to_unicode(data[i][1])
+                if k == answer:
+                    label = '1'
+                else:
+                    label = '0'
+                tokenization.convert_to_unicode(label)
                 examples.append(
                         InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, text_c=text_c))
             
@@ -177,7 +182,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
     for (i, label) in enumerate(label_list):
         label_map[label] = i
 
-    features = [[]]
+    features = []
     for (ex_index, example) in enumerate(examples):
         tokens_a = tokenizer.tokenize(example.text_a)
 
@@ -233,17 +238,13 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
                     "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info("label: %s (id = %d)" % (example.label, label_id))
 
-        features[-1].append(
+        features.append(
                 InputFeatures(
                         input_ids=input_ids,
                         input_mask=input_mask,
                         segment_ids=segment_ids,
                         label_id=label_id))
-        if len(features[-1]) == n_class:
-            features.append([])
 
-    if len(features[-1]) == 0:
-        features = features[:-1]
     print('#features', len(features))
     return features
 
@@ -275,12 +276,31 @@ def _truncate_seq_tuple(tokens_a, tokens_b, tokens_c, max_length):
         if total_length <= max_length:
             break
         else:
-            tokens_c.pop()            
+            tokens_a.pop()            
 
 
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
     return np.sum(outputs==labels)
+
+
+def construct_input_data(features):
+    input_ids = []
+    input_mask = []
+    segment_ids = []
+    label_id = []
+    for f in features:
+        input_ids.append(f.input_ids)
+        input_mask.append(f.input_mask)
+        segment_ids.append(f.segment_ids)
+        label_id.append([f.label_id])                
+
+    all_input_ids = torch.tensor(input_ids, dtype=torch.long)
+    all_input_mask = torch.tensor(input_mask, dtype=torch.long)
+    all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
+    all_label_ids = torch.tensor(label_id, dtype=torch.long)
+    return (all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -437,9 +457,9 @@ def main():
     if args.do_train:
         train_examples = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
-            len(train_examples) / n_class / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
+            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
-    model = BertForSequenceClassification(bert_config, 1 if n_class > 1 else len(label_list))
+    model = BertForSequenceClassification(bert_config)
     if args.init_checkpoint is not None:
         model.bert.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
     model.to(device)
@@ -468,32 +488,9 @@ def main():
         eval_features = convert_examples_to_features(
             eval_examples, label_list, args.max_seq_length, tokenizer)
 
-        input_ids = []
-        input_mask = []
-        segment_ids = []
-        label_id = []
-        
-        for f in eval_features:
-            input_ids.append([])
-            input_mask.append([])
-            segment_ids.append([])
-            for i in range(n_class):
-                input_ids[-1].append(f[i].input_ids)
-                input_mask[-1].append(f[i].input_mask)
-                segment_ids[-1].append(f[i].segment_ids)
-            label_id.append([f[0].label_id])                
-
-        all_input_ids = torch.tensor(input_ids, dtype=torch.long)
-        all_input_mask = torch.tensor(input_mask, dtype=torch.long)
-        all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
-        all_label_ids = torch.tensor(label_id, dtype=torch.long)
-
-        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        if args.local_rank == -1:
-            eval_sampler = SequentialSampler(eval_data)
-        else:
-            eval_sampler = DistributedSampler(eval_data)
-        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        eval_input_data = construct_input_data(eval_features)
+        eval_data = TensorDataset(*eval_input_data)
+        eval_dataloader = DataLoader(eval_data, batch_size=args.eval_batch_size)
 
     
     if args.do_train:
@@ -505,33 +502,17 @@ def main():
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_steps)
-
-        input_ids = []
-        input_mask = []
-        segment_ids = []
-        label_id = []
-        for f in train_features:
-            input_ids.append([])
-            input_mask.append([])
-            segment_ids.append([])
-            for i in range(n_class):
-                input_ids[-1].append(f[i].input_ids)
-                input_mask[-1].append(f[i].input_mask)
-                segment_ids[-1].append(f[i].segment_ids)
-            label_id.append([f[0].label_id])                
-
-        all_input_ids = torch.tensor(input_ids, dtype=torch.long)
-        all_input_mask = torch.tensor(input_mask, dtype=torch.long)
-        all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
-        all_label_ids = torch.tensor(label_id, dtype=torch.long)
-
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+        
+        train_input_data = construct_input_data(train_features)
+        train_data = TensorDataset(*train_input_data)
+        
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
             train_sampler = DistributedSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
+        # 开始训练
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
             tr_loss = 0
@@ -539,7 +520,7 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                loss, _ = model(input_ids, segment_ids, input_mask, label_ids, n_class)
+                loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -601,9 +582,10 @@ def main():
                 
         model.load_state_dict(torch.load(os.path.join(args.output_dir, "model_best.pt")))
         torch.save(model.state_dict(), os.path.join(args.output_dir, "model.pt"))
-
+  
     model.load_state_dict(torch.load(os.path.join(args.output_dir, "model.pt")))
-
+    #训练结束
+    #开始评估
     if args.do_eval:
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
@@ -664,47 +646,25 @@ def main():
                     else:
                         f.write(" ")
 
-
-        eval_examples = processor.get_test_examples(args.data_dir)
-        eval_features = convert_examples_to_features(
-            eval_examples, label_list, args.max_seq_length, tokenizer)
+        # 评估测试集
+        test_examples = processor.get_test_examples(args.data_dir)
+        test_features = convert_examples_to_features(
+            test_examples, label_list, args.max_seq_length, tokenizer)
 
         logger.info("***** Running evaluation *****")
-        logger.info("  Num examples = %d", len(eval_examples))
+        logger.info("  Num examples = %d", len(test_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
-
-        input_ids = []
-        input_mask = []
-        segment_ids = []
-        label_id = []
         
-        for f in eval_features:
-            input_ids.append([])
-            input_mask.append([])
-            segment_ids.append([])
-            for i in range(n_class):
-                input_ids[-1].append(f[i].input_ids)
-                input_mask[-1].append(f[i].input_mask)
-                segment_ids[-1].append(f[i].segment_ids)
-            label_id.append([f[0].label_id])                
-
-        all_input_ids = torch.tensor(input_ids, dtype=torch.long)
-        all_input_mask = torch.tensor(input_mask, dtype=torch.long)
-        all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
-        all_label_ids = torch.tensor(label_id, dtype=torch.long)
-
-        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        if args.local_rank == -1:
-            eval_sampler = SequentialSampler(eval_data)
-        else:
-            eval_sampler = DistributedSampler(eval_data)
-        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        test_input_data = construct_input_data(test_features)
+        test_data = TensorDataset(*test_input_data)
+        
+        test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
         model.eval()
         eval_loss, eval_accuracy = 0, 0
         nb_eval_steps, nb_eval_examples = 0, 0
         logits_all = []
-        for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
+        for input_ids, input_mask, segment_ids, label_ids in test_dataloader:
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
