@@ -36,7 +36,7 @@ from optimization import BERTAdam
 
 import json
 
-n_class = 4
+# n_class = 4
 reverse_order = False
 sa_step = False
 
@@ -109,6 +109,7 @@ class c3Processor(DataProcessor):
     def __init__(self):
         random.seed(42)
         self.D = [[], [], []]
+        self.opt_n = [[], [], []]
 
         for sid in range(3):
             data = []
@@ -121,26 +122,24 @@ class c3Processor(DataProcessor):
                 for j in range(len(data[i][1])):
                     d = ['\n'.join(data[i][0]).lower(), data[i][1][j]["question"].lower()]
                     for k in range(len(data[i][1][j]["choice"])):
-                        d += [data[i][1][j]["choice"][k].lower()]
-                    for k in range(len(data[i][1][j]["choice"]), 4):
-                        d += ['']
+                        d += [data[i][1][j]["choice"][k].lower()]  
+                    # for k in range(len(data[i][1][j]["choice"]), 4):
+                        # d += ['']
                     d += [data[i][1][j]["answer"].lower()] 
                     self.D[sid] += [d]
+                    self.opt_n[sid].append(len(data[i][1][j]["choice"]))
     
     def get_train_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(
-                self.D[0], "train")
+        return self._create_examples(self.D[0], "train"), self.opt_n[0]
 
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(
-                self.D[2], "test")
+        return self._create_examples(self.D[2], "test"), self.opt_n[2]
 
     def get_dev_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(
-                self.D[1], "dev")
+        return self._create_examples(self.D[1], "dev"), self.opt_n[1]
 
     def get_labels(self):
         """See base class."""
@@ -150,13 +149,13 @@ class c3Processor(DataProcessor):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, d) in enumerate(data):
-            for k in range(4):
-                if data[i][2+k] == data[i][6]:
+            for k in range(len(data[i])-3):
+                if data[i][2+k] == data[i][-1]:
                     answer = k
                     
             # label = tokenization.convert_to_unicode(answer)
 
-            for k in range(4):
+            for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
                 text_a = tokenization.convert_to_unicode(data[i][0])
                 text_b = tokenization.convert_to_unicode(data[i][k+2])
@@ -302,14 +301,15 @@ def construct_input_data(features):
     return (all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
 
 
-def collapse_logits_to_answer(all_logits, all_label_ids, question_len_ls):
-    assert sum(question_len_ls)==len(all_logits) and len(all_logits)==len(all_label_ids)
+def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
+    assert sum(opt_n_ls)==len(all_logits) and len(all_logits)==len(all_label_ids)
     preds, labels = [], []
     curr = 0
-    for q_len in question_len_ls:
-        logits = all_logits[curr : curr+q_len]
-        label_ids = all_label_ids[curr : curr+q_len]
+    for opt_n in opt_n_ls:
+        logits = all_logits[curr : curr+opt_n]
+        label_ids = all_label_ids[curr : curr+opt_n]
         assert sum(label_ids)==1
+        curr += opt_n
         pred = np.argmax(logits)
         label = label_ids.index(1)
         preds.append(pred)
@@ -470,7 +470,7 @@ def main():
     train_examples = None
     num_train_steps = None
     if args.do_train:
-        train_examples = processor.get_train_examples(args.data_dir)
+        train_examples, train_opt_n = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
@@ -499,7 +499,7 @@ def main():
     global_step = 0
 
     if args.do_eval:
-        eval_examples = processor.get_dev_examples(args.data_dir)
+        eval_examples, dev_opt_n = processor.get_dev_examples(args.data_dir)
         eval_features = convert_examples_to_features(
             eval_examples, label_list, args.max_seq_length, tokenizer)
 
@@ -575,7 +575,7 @@ def main():
 
             eval_loss = eval_loss / nb_eval_steps
 
-            preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, question_len_ls) #待补充
+            preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, dev_opt_n) #待补充
             eval_accuracy = accuracy(preds, labels)
 
             if args.do_train:
@@ -662,7 +662,7 @@ def main():
                         f.write(" ")
 
         # 评估测试集
-        test_examples = processor.get_test_examples(args.data_dir)
+        test_examples, test_opt_n = processor.get_test_examples(args.data_dir)
         test_features = convert_examples_to_features(
             test_examples, label_list, args.max_seq_length, tokenizer)
 
