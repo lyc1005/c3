@@ -27,11 +27,13 @@ from tqdm import tqdm, trange
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
 import tokenization
-from modeling import BertConfig, BertForSequenceClassification
+# from modeling import BertConfig, BertForSequenceClassification
+from transformers import BertTokenizer, BertForSequenceClassification, BertConfig
 from optimization import BERTAdam
 
 import json
@@ -318,6 +320,8 @@ def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
 
 
 def evaluate(model, dataloader, opt_n_ls, device):
+    if not next(model.parameters()).is_cuda:
+        model.to(device)
     model.eval()
     eval_loss = 0
     nb_eval_steps, nb_eval_examples = 0, 0
@@ -330,9 +334,13 @@ def evaluate(model, dataloader, opt_n_ls, device):
         label_ids = label_ids.to(device)
 
         with torch.no_grad():
-            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
-
-        logits = logits.detach().cpu().numpy()[:,1].tolist()
+            outputs = model(input_ids=input_ids, 
+                                token_type_ids=segment_ids, 
+                                attention_mask=input_mask, 
+                                labels=label_ids)
+        tmp_eval_loss = outputs.loss
+        logits = outputs.logits
+        logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
         label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
         all_logits.extend(logits)
         all_label_ids.extend(label_ids)
@@ -358,22 +366,22 @@ def main():
                         type=str,
                         required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_config_file",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The config json file corresponding to the pre-trained BERT model. \n"
-                             "This specifies the model architecture.")
+    # parser.add_argument("--bert_config_file",
+    #                     default=None,
+    #                     type=str,
+    #                     required=True,
+    #                     help="The config json file corresponding to the pre-trained BERT model. \n"
+    #                          "This specifies the model architecture.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
                         required=True,
                         help="The name of the task to train.")
-    parser.add_argument("--vocab_file",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The vocabulary file that the BERT model was trained on.")
+    # parser.add_argument("--vocab_file",
+    #                     default=None,
+    #                     type=str,
+    #                     required=True,
+    #                     help="The vocabulary file that the BERT model was trained on.")
     parser.add_argument("--output_dir",
                         default=None,
                         type=str,
@@ -382,9 +390,9 @@ def main():
 
     ## Other parameters
     parser.add_argument("--init_checkpoint",
-                        default=None,
+                        default='bert-base-chinese',
                         type=str,
-                        help="Initial checkpoint (usually from a pre-trained BERT model).")
+                        help="Initial checkpoint key (search in https://huggingface.co/models)")
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -475,7 +483,8 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    bert_config = BertConfig.from_json_file(args.bert_config_file)
+    # bert_config = BertConfig.from_json_file(args.bert_config_file)
+    bert_config = BertConfig()
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -496,8 +505,9 @@ def main():
     processor = processors[task_name]()
     label_list = processor.get_labels()
 
-    tokenizer = tokenization.FullTokenizer(
-        vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
+    # tokenizer = tokenization.FullTokenizer(
+    #     vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
+    tokenizer = BertTokenizer.from_pretrained(args.init_checkpoint)
 
     train_examples = None
     num_train_steps = None
@@ -506,9 +516,10 @@ def main():
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
-    model = BertForSequenceClassification(bert_config)
-    if args.init_checkpoint is not None:
-        model.bert.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
+    # model = BertForSequenceClassification(bert_config)
+    model = BertForSequenceClassification.from_pretrained(args.init_checkpoint)
+    # if args.init_checkpoint is not None:
+    #     model.bert.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
     model.to(device)
 
     if args.local_rank != -1:
@@ -525,8 +536,8 @@ def main():
 
     optimizer = BERTAdam(optimizer_parameters,
                          lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=num_train_steps)
+                         warmup=args.warmup_proportion)
+                        #  t_total=num_train_steps)
 
     global_step = 0
 
@@ -567,7 +578,13 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
+                outputs = model(input_ids=input_ids, 
+                                token_type_ids=segment_ids, 
+                                attention_mask=input_mask, 
+                                labels=label_ids)
+                loss = outputs.loss
+                if step%100==0:
+                    logger.info("  loss = %f", loss)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
