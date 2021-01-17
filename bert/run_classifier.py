@@ -317,6 +317,38 @@ def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
     return preds, labels
 
 
+def evaluate(model, dataloader, opt_n_ls, device):
+    model.eval()
+    eval_loss = 0
+    nb_eval_steps, nb_eval_examples = 0, 0
+    all_logits = []
+    all_label_ids = []
+    for input_ids, input_mask, segment_ids, label_ids in dataloader:
+        input_ids = input_ids.to(device)
+        input_mask = input_mask.to(device)
+        segment_ids = segment_ids.to(device)
+        label_ids = label_ids.to(device)
+
+        with torch.no_grad():
+            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+
+        logits = logits.detach().cpu().numpy()[:,1].tolist()
+        label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
+        all_logits.extend(logits)
+        all_label_ids.extend(label_ids)
+
+        eval_loss += tmp_eval_loss.mean().item()
+
+        nb_eval_examples += input_ids.size(0)
+        nb_eval_steps += 1
+
+    eval_loss = eval_loss / nb_eval_steps
+
+    preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls)
+    eval_accuracy = accuracy(preds, labels)
+    return eval_loss, eval_accuracy
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -533,6 +565,8 @@ def main():
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                if step>10:
+                    continue
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
@@ -549,34 +583,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
             # 每个epoch结束评估验证集
-            model.eval()
-            eval_loss = 0
-            nb_eval_steps, nb_eval_examples = 0, 0
-            all_logits = []
-            all_label_ids = []
-            for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
-                input_ids = input_ids.to(device)
-                input_mask = input_mask.to(device)
-                segment_ids = segment_ids.to(device)
-                label_ids = label_ids.to(device)
-
-                with torch.no_grad():
-                    tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids, n_class)
-
-                logits = logits.detach().cpu().numpy()[:,1].tolist()
-                label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
-                all_logits.extend(logits)
-                all_label_ids.extend(label_ids)
-
-                eval_loss += tmp_eval_loss.mean().item()
-
-                nb_eval_examples += input_ids.size(0)
-                nb_eval_steps += 1
-
-            eval_loss = eval_loss / nb_eval_steps
-
-            preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, dev_opt_n) #待补充
-            eval_accuracy = accuracy(preds, labels)
+            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device)
 
             if args.do_train:
                 result = {'eval_loss': eval_loss,
@@ -598,42 +605,15 @@ def main():
         model.load_state_dict(torch.load(os.path.join(args.output_dir, "model_best.pt")))
         torch.save(model.state_dict(), os.path.join(args.output_dir, "model.pt"))
   
-    model.load_state_dict(torch.load(os.path.join(args.output_dir, "model.pt")))
     #训练结束
     #开始评估
+    model.load_state_dict(torch.load(os.path.join(args.output_dir, "model.pt")))
     if args.do_eval:
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
-
-        model.eval()
-        eval_loss, eval_accuracy = 0, 0
-        nb_eval_steps, nb_eval_examples = 0, 0
-        logits_all = []
-        for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
-            input_ids = input_ids.to(device)
-            input_mask = input_mask.to(device)
-            segment_ids = segment_ids.to(device)
-            label_ids = label_ids.to(device)
-
-            with torch.no_grad():
-                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids, n_class)
-
-            logits = logits.detach().cpu().numpy()
-            label_ids = label_ids.to('cpu').numpy()
-            for i in range(len(logits)):
-                logits_all += [logits[i]]
-            
-            tmp_eval_accuracy = accuracy(logits, label_ids.reshape(-1))
-
-            eval_loss += tmp_eval_loss.mean().item()
-            eval_accuracy += tmp_eval_accuracy
-
-            nb_eval_examples += input_ids.size(0)
-            nb_eval_steps += 1
-
-        eval_loss = eval_loss / nb_eval_steps
-        eval_accuracy = eval_accuracy / nb_eval_examples
+        
+        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device)
 
         if args.do_train:
             result = {'eval_loss': eval_loss,
@@ -644,22 +624,21 @@ def main():
             result = {'eval_loss': eval_loss,
                       'eval_accuracy': eval_accuracy}
 
-
         output_eval_file = os.path.join(args.output_dir, "eval_results_dev.txt")
         with open(output_eval_file, "w") as writer:
             logger.info("***** Eval results *****")
             for key in sorted(result.keys()):
                 logger.info("  %s = %s", key, str(result[key]))
                 writer.write("%s = %s\n" % (key, str(result[key])))
-        output_eval_file = os.path.join(args.output_dir, "logits_dev.txt")
-        with open(output_eval_file, "w") as f:
-            for i in range(len(logits_all)):
-                for j in range(len(logits_all[i])):
-                    f.write(str(logits_all[i][j]))
-                    if j == len(logits_all[i])-1:
-                        f.write("\n")
-                    else:
-                        f.write(" ")
+        # output_eval_file = os.path.join(args.output_dir, "logits_dev.txt")
+        # with open(output_eval_file, "w") as f:
+        #     for i in range(len(logits_all)):
+        #         for j in range(len(logits_all[i])):
+        #             f.write(str(logits_all[i][j]))
+        #             if j == len(logits_all[i])-1:
+        #                 f.write("\n")
+        #             else:
+        #                 f.write(" ")
 
         # 评估测试集
         test_examples, test_opt_n = processor.get_test_examples(args.data_dir)
@@ -675,44 +654,16 @@ def main():
         
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
-        model.eval()
-        eval_loss, eval_accuracy = 0, 0
-        nb_eval_steps, nb_eval_examples = 0, 0
-        logits_all = []
-        for input_ids, input_mask, segment_ids, label_ids in test_dataloader:
-            input_ids = input_ids.to(device)
-            input_mask = input_mask.to(device)
-            segment_ids = segment_ids.to(device)
-            label_ids = label_ids.to(device)
-
-            with torch.no_grad():
-                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids, n_class)
-
-            logits = logits.detach().cpu().numpy()
-            label_ids = label_ids.to('cpu').numpy()
-            for i in range(len(logits)):
-                logits_all += [logits[i]]
-            
-            tmp_eval_accuracy = accuracy(logits, label_ids.reshape(-1))
-
-            eval_loss += tmp_eval_loss.mean().item()
-            eval_accuracy += tmp_eval_accuracy
-
-            nb_eval_examples += input_ids.size(0)
-            nb_eval_steps += 1
-
-        eval_loss = eval_loss / nb_eval_steps
-        eval_accuracy = eval_accuracy / nb_eval_examples
+        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device)
 
         if args.do_train:
-            result = {'eval_loss': eval_loss,
-                      'eval_accuracy': eval_accuracy,
+            result = {'eval_loss': test_loss,
+                      'eval_accuracy': test_accuracy,
                       'global_step': global_step,
                       'loss': tr_loss/nb_tr_steps}
         else:
-            result = {'eval_loss': eval_loss,
-                      'eval_accuracy': eval_accuracy}
-
+            result = {'eval_loss': test_loss,
+                      'eval_accuracy': test_accuracy}
 
         output_eval_file = os.path.join(args.output_dir, "eval_results_test.txt")
         with open(output_eval_file, "w") as writer:
@@ -720,15 +671,15 @@ def main():
             for key in sorted(result.keys()):
                 logger.info("  %s = %s", key, str(result[key]))
                 writer.write("%s = %s\n" % (key, str(result[key])))
-        output_eval_file = os.path.join(args.output_dir, "logits_test.txt")
-        with open(output_eval_file, "w") as f:
-            for i in range(len(logits_all)):
-                for j in range(len(logits_all[i])):
-                    f.write(str(logits_all[i][j]))
-                    if j == len(logits_all[i])-1:
-                        f.write("\n")
-                    else:
-                        f.write(" ")
+        # output_eval_file = os.path.join(args.output_dir, "logits_test.txt")
+        # with open(output_eval_file, "w") as f:
+        #     for i in range(len(logits_all)):
+        #         for j in range(len(logits_all[i])):
+        #             f.write(str(logits_all[i][j]))
+        #             if j == len(logits_all[i])-1:
+        #                 f.write("\n")
+        #             else:
+        #                 f.write(" ")
 
 if __name__ == "__main__":
     main()
