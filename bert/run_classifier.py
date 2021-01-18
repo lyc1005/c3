@@ -27,13 +27,14 @@ from tqdm import tqdm, trange
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
 import tokenization
 # from modeling import BertConfig, BertForSequenceClassification
-from transformers import BertTokenizer, BertForSequenceClassification, BertConfig
+from transformers import BertTokenizer, BertModel, BertConfig
 from optimization import BERTAdam
 
 import json
@@ -357,6 +358,28 @@ def evaluate(model, dataloader, opt_n_ls, device):
     return eval_loss, eval_accuracy
 
 
+class Model(nn.Module):
+    def __init__(self, config, init_checkpoint):
+        super(Model, self).__init__()
+        self.bert = BertModel.from_pretrained(init_checkpoint)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, 2)
+
+    def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
+        outputs = self.bert(input_ids=input_ids, 
+                            token_type_ids=token_type_ids, 
+                            attention_mask=attention_mask)
+        pooler_output = outputs.pooler_output
+        pooler_output = self.dropout(pooler_output)
+        logits = self.classifier(pooler_output)
+        if labels is not None:
+            labels = labels.view(-1)
+            loss = F.cross_entropy(logits, labels)
+            return loss, logits
+        else:
+            return logits
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -484,7 +507,7 @@ def main():
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     # bert_config = BertConfig.from_json_file(args.bert_config_file)
-    bert_config = BertConfig()
+    bert_config = BertConfig.from_pretrained(args.init_checkpoint)
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -517,7 +540,7 @@ def main():
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # model = BertForSequenceClassification(bert_config)
-    model = BertForSequenceClassification.from_pretrained(args.init_checkpoint)
+    model = Model(bert_config, args.init_checkpoint)
     # if args.init_checkpoint is not None:
     #     model.bert.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
     model.to(device)
@@ -578,11 +601,10 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                outputs = model(input_ids=input_ids, 
+                loss, _ = model(input_ids=input_ids, 
                                 token_type_ids=segment_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
-                loss = outputs.loss
                 if step%100==0:
                     logger.info("  loss = %f", loss)
                 if n_gpu > 1:
