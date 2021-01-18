@@ -35,6 +35,7 @@ from torch.utils.data.distributed import DistributedSampler
 import tokenization
 from transformers import BertTokenizer, BertModel, BertConfig
 from longformer.longformer import *
+from longformer.sliding_chunks import pad_to_window_size
 from optimization import BERTAdam
 
 import json
@@ -197,31 +198,37 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
 
         tokens = []
         segment_ids = []
+        input_mask = []
         tokens.append("[CLS]")
         segment_ids.append(0)
+        input_mask.append(1)
         for token in tokens_a:
             tokens.append(token)
             segment_ids.append(0)
+            input_mask.append(0)
         tokens.append("[SEP]")
         segment_ids.append(0)
+        input_mask.append(0)
 
         if tokens_b:
             for token in tokens_b:
                 tokens.append(token)
                 segment_ids.append(1)
+                input_mask.append(1)
             tokens.append("[SEP]")
             segment_ids.append(1)
+            input_mask.append(1)
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
-        input_mask = [1] * len(input_ids)
+        # input_mask = [1] * len(input_ids)
 
         # Zero-pad up to the sequence length.
         while len(input_ids) < max_seq_length:
             input_ids.append(0)
-            input_mask.append(0)
+            input_mask.append(-1)
             segment_ids.append(0)
 
         assert len(input_ids) == max_seq_length
@@ -331,25 +338,23 @@ def evaluate(model, dataloader, opt_n_ls, device):
     for input_ids, input_mask, segment_ids, label_ids in dataloader:
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
-        segment_ids = segment_ids.to(device)
         label_ids = label_ids.to(device)
-
+        # d待补充
+        input_ids, input_mask = pad_to_window_size(
+                        input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
         with torch.no_grad():
-            outputs = model(input_ids=input_ids, 
-                                token_type_ids=segment_ids, 
-                                attention_mask=input_mask, 
-                                labels=label_ids)
-        tmp_eval_loss = outputs.loss
-        logits = outputs.logits
-        logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
-        label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
-        all_logits.extend(logits)
-        all_label_ids.extend(label_ids)
+            tmp_eval_loss, logits = model(input_ids=input_ids, 
+                                          attention_mask=input_mask, 
+                                          labels=label_ids)
+            logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
+            label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
+            all_logits.extend(logits)
+            all_label_ids.extend(label_ids)
 
-        eval_loss += tmp_eval_loss.mean().item()
+            eval_loss += tmp_eval_loss.mean().item()
 
-        nb_eval_examples += input_ids.size(0)
-        nb_eval_steps += 1
+            nb_eval_examples += input_ids.size(0)
+            nb_eval_steps += 1
 
     eval_loss = eval_loss / nb_eval_steps
 
@@ -365,10 +370,9 @@ class Model(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, 2)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
+    def forward(self, input_ids, attention_mask, labels=None):
         _, pooler_output = self.encoder(input_ids=input_ids, 
-                               token_type_ids=token_type_ids, 
-                               attention_mask=attention_mask)
+                                        attention_mask=attention_mask)
         pooler_output = self.dropout(pooler_output)
         logits = self.classifier(pooler_output)
         if labels is not None:
@@ -553,7 +557,6 @@ def main():
     optimizer = BERTAdam(optimizer_parameters,
                          lr=args.learning_rate,
                          warmup=args.warmup_proportion)
-                        #  t_total=num_train_steps)
 
     global_step = 0
 
@@ -594,8 +597,9 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
+                input_ids, input_mask = pad_to_window_size(
+                input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
                 loss, _ = model(input_ids=input_ids, 
-                                token_type_ids=segment_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
                 if step%100==0:
