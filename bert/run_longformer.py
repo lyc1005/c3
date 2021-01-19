@@ -40,7 +40,6 @@ from optimization import BERTAdam
 
 import json
 
-# n_class = 4
 reverse_order = False
 sa_step = False
 
@@ -174,6 +173,69 @@ class c3Processor(DataProcessor):
             
         return examples
 
+
+class RCProcessor(DataProcessor):
+    def __init__(self):
+        random.seed(42)
+        self.D = [[], [], []]
+        self.opt_n = [[], [], []]
+        self.ans_mapper = {'A':0,'B':1,'C':2,'D':3,'E':4}
+
+        for sid in range(3):
+            data = []
+            with open("rc_data/"+["train_1.json", "dev_1.json", "test_1.json"][sid], "r", encoding="utf-8") as f:
+                data += json.load(f)
+            if sid == 0:
+                random.shuffle(data)
+            for p_idx, passage in enumerate(data):
+                content = passage['Content']
+                for q_idx, q in enumerate(passage['Questions']):
+                    question = q['Question']
+                    answer = q['Choices'][self.ans_mapper[q['Answer']]]
+                    d = [content, question] + q['Choices'] + [answer]
+                    self.D[sid].append(d)
+                    self.opt_n[sid].append(len(q['Choices']))
+    
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(self.D[0], "train"), self.opt_n[0]
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(self.D[2], "test"), self.opt_n[2]
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(self.D[1], "dev"), self.opt_n[1]
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1", "2", "3", "4"]
+
+    def _create_examples(self, data, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, d) in enumerate(data):
+            for k in range(len(data[i])-3):
+                if data[i][2+k] == data[i][-1]:
+                    answer = k
+                    
+            # label = tokenization.convert_to_unicode(answer)
+
+            for k in range(len(data[i])-3):
+                guid = "%s-%s-%s" % (set_type, i, k)
+                text_a = tokenization.convert_to_unicode(data[i][0])
+                text_b = tokenization.convert_to_unicode(data[i][k+2])
+                text_c = tokenization.convert_to_unicode(data[i][1])
+                if k == answer:
+                    label = '1'
+                else:
+                    label = '0'
+                tokenization.convert_to_unicode(label)
+                examples.append(
+                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, text_c=text_c))
+            
+        return examples
 
 
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer):
@@ -470,6 +532,7 @@ def main():
 
     processors = {
         "c3": c3Processor,
+        "rc": RCProcessor,
     }
 
     if args.local_rank == -1 or args.no_cuda:
