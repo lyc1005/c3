@@ -201,23 +201,23 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         input_mask = []
         tokens.append("[CLS]")
         segment_ids.append(0)
-        input_mask.append(1)
+        input_mask.append(2)
         for token in tokens_a:
             tokens.append(token)
             segment_ids.append(0)
-            input_mask.append(0)
+            input_mask.append(1)
         tokens.append("[SEP]")
         segment_ids.append(0)
-        input_mask.append(0)
+        input_mask.append(1)
 
         if tokens_b:
             for token in tokens_b:
                 tokens.append(token)
                 segment_ids.append(1)
-                input_mask.append(1)
+                input_mask.append(2)
             tokens.append("[SEP]")
             segment_ids.append(1)
-            input_mask.append(1)
+            input_mask.append(2)
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
@@ -228,7 +228,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         # Zero-pad up to the sequence length.
         while len(input_ids) < max_seq_length:
             input_ids.append(0)
-            input_mask.append(-1)
+            input_mask.append(0)
             segment_ids.append(0)
 
         assert len(input_ids) == max_seq_length
@@ -327,7 +327,7 @@ def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
     return preds, labels
 
 
-def evaluate(model, dataloader, opt_n_ls, device):
+def evaluate(model, dataloader, opt_n_ls, device, config=None, tokenizer=None):
     if not next(model.parameters()).is_cuda:
         model.to(device)
     model.eval()
@@ -339,7 +339,6 @@ def evaluate(model, dataloader, opt_n_ls, device):
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
         label_ids = label_ids.to(device)
-        # d待补充
         input_ids, input_mask = pad_to_window_size(
                         input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
         with torch.no_grad():
@@ -392,22 +391,11 @@ def main():
                         type=str,
                         required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    # parser.add_argument("--bert_config_file",
-    #                     default=None,
-    #                     type=str,
-    #                     required=True,
-    #                     help="The config json file corresponding to the pre-trained BERT model. \n"
-    #                          "This specifies the model architecture.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
                         required=True,
                         help="The name of the task to train.")
-    # parser.add_argument("--vocab_file",
-    #                     default=None,
-    #                     type=str,
-    #                     required=True,
-    #                     help="The vocabulary file that the BERT model was trained on.")
     parser.add_argument("--output_dir",
                         default=None,
                         type=str,
@@ -617,7 +605,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
             # 每个epoch结束评估验证集
-            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device)
+            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device, config=config, tokenizer=tokenizer)
 
             if args.do_train:
                 result = {'eval_loss': eval_loss,
@@ -647,7 +635,7 @@ def main():
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
         
-        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device)
+        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device, , config=config, tokenizer=tokenizer)
 
         if args.do_train:
             result = {'eval_loss': eval_loss,
@@ -688,7 +676,7 @@ def main():
         
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
-        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device)
+        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device, , config=config, tokenizer=tokenizer)
 
         if args.do_train:
             result = {'eval_loss': test_loss,
