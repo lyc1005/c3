@@ -583,6 +583,8 @@ def main():
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                if step>1000:
+                    continue
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 input_ids, input_mask = pad_to_window_size(
@@ -635,7 +637,7 @@ def main():
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
         
-        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device, , config=config, tokenizer=tokenizer)
+        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device, config=config, tokenizer=tokenizer)
 
         if args.do_train:
             result = {'eval_loss': eval_loss,
@@ -676,7 +678,7 @@ def main():
         
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
-        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device, , config=config, tokenizer=tokenizer)
+        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device, config=config, tokenizer=tokenizer)
 
         if args.do_train:
             result = {'eval_loss': test_loss,
