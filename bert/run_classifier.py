@@ -402,8 +402,8 @@ def evaluate(model, dataloader, opt_n_ls, device):
                                 token_type_ids=segment_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
-        tmp_eval_loss = outputs.loss
-        logits = outputs.logits
+        tmp_eval_loss = outputs[0]
+        logits = outputs[1]
         logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
         label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
         all_logits.extend(logits)
