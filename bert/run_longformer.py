@@ -390,8 +390,8 @@ def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
 
 
 def evaluate(model, dataloader, opt_n_ls, device, config=None, tokenizer=None):
-    # if not next(model.parameters()).is_cuda:
-    model.to(device)
+    if not next(model.parameters()).is_cuda:
+        model.to(device)
     model.eval()
     eval_loss = 0
     nb_eval_steps, nb_eval_examples = 0, 0
@@ -561,6 +561,7 @@ def main():
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     config = LongformerConfig.from_pretrained(args.init_checkpoint)
+    config.attention_mode = 'sliding_chunks' #'sliding_chunks','tvm'
 
     if args.max_seq_length > config.max_position_embeddings:
         raise ValueError(
@@ -646,8 +647,6 @@ def main():
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                if step>1000:
-                    continue
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 input_ids, input_mask = pad_to_window_size(

@@ -384,8 +384,8 @@ def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
 
 
 def evaluate(model, dataloader, opt_n_ls, device):
-    # if not next(model.parameters()).is_cuda:
-    model.to(device)
+    if not next(model.parameters()).is_cuda:
+        model.to(device)
     model.eval()
     eval_loss = 0
     nb_eval_steps, nb_eval_examples = 0, 0
