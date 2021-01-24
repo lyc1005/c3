@@ -655,12 +655,12 @@ def main():
                 loss, _ = model(input_ids=input_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
-                if step%100==0:
-                    logger.info("  loss = %f", loss)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
+                if step%100==0:
+                    logger.info("  loss = %f", loss)
                 loss.backward()
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
