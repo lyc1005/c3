@@ -126,12 +126,11 @@ class c3Processor(DataProcessor):
                     d = ['\n'.join(data[i][0]).lower(), data[i][1][j]["question"].lower()]
                     for k in range(len(data[i][1][j]["choice"])):
                         d += [data[i][1][j]["choice"][k].lower()]  
-                    # for k in range(len(data[i][1][j]["choice"]), 4):
-                        # d += ['']
+                    for k in range(len(data[i][1][j]["choice"]), 4):
+                        d += ['']
                     d += [data[i][1][j]["answer"].lower()] 
                     self.D[sid] += [d]
                     self.opt_n[sid].append(len(data[i][1][j]["choice"]))
-        print('here!!', self.D[1])
     
     def get_train_examples(self, data_dir):
         """See base class."""
@@ -161,16 +160,11 @@ class c3Processor(DataProcessor):
 
             for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
-                text_a = tokenization.convert_to_unicode(data[i][0])
-                text_b = tokenization.convert_to_unicode(data[i][k+2])
-                text_c = tokenization.convert_to_unicode(data[i][1])
-                if k == answer:
-                    label = '1'
-                else:
-                    label = '0'
-                tokenization.convert_to_unicode(label)
+                text_a = tokenization.convert_to_unicode(data[i][0]) #content
+                text_b = tokenization.convert_to_unicode(data[i][k+2]) #option
+                text_c = tokenization.convert_to_unicode(data[i][1]) #question
                 examples.append(
-                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, text_c=text_c))
+                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=answer, text_c=text_c))
             
         return examples
 
@@ -179,7 +173,7 @@ class RCProcessor(DataProcessor):
         random.seed(42)
         self.D = [[], [], []]
         self.opt_n = [[], [], []]
-        self.ans_mapper = {'A':0,'B':1,'C':2,'D':3,'E':4}
+        self.ans_mapper = {'A':0,'B':1,'C':2,'D':3}
 
         for sid in range(3):
             data = []
@@ -192,7 +186,10 @@ class RCProcessor(DataProcessor):
                 for q_idx, q in enumerate(passage['Questions']):
                     question = q['Question']
                     answer = q['Choices'][self.ans_mapper[q['Answer']]]
-                    d = [content, question] + q['Choices'] + [answer]
+                    choices = q['Choices']
+                    while len(choices) < 4:
+                        choices.append('')
+                    d = [content, question] + choices + [answer]
                     self.D[sid].append(d)
                     self.opt_n[sid].append(len(q['Choices']))
     
@@ -210,7 +207,7 @@ class RCProcessor(DataProcessor):
 
     def get_labels(self):
         """See base class."""
-        return ["0", "1", "2", "3", "4"]
+        return ["0", "1", "2", "3"]
 
     def _create_examples(self, data, set_type):
         """Creates examples for the training and dev sets."""
@@ -222,15 +219,11 @@ class RCProcessor(DataProcessor):
 
             for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
-                text_a = tokenization.convert_to_unicode(data[i][0])
-                text_b = tokenization.convert_to_unicode(data[i][k+2])
-                text_c = tokenization.convert_to_unicode(data[i][1])
-                if k == answer:
-                    label = '1'
-                else:
-                    label = '0'
+                text_a = tokenization.convert_to_unicode(data[i][0]) #content
+                text_b = tokenization.convert_to_unicode(data[i][k+2]) #option
+                text_c = tokenization.convert_to_unicode(data[i][1]) #question
                 examples.append(
-                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, text_c=text_c))
+                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=answer, text_c=text_c))
             
         return examples
 
@@ -239,10 +232,6 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
     """Loads a data file into a list of `InputBatch`s."""
 
     print("#examples", len(examples))
-
-    label_map = {}
-    for (i, label) in enumerate(label_list):
-        label_map[label] = i
 
     features = []
     for (ex_index, example) in enumerate(examples):
@@ -288,7 +277,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
 
-        label_id = label_map[example.label]
+        label_id = example.label
         if ex_index < 5:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
@@ -355,38 +344,23 @@ def construct_input_data(features):
         input_ids.append(f.input_ids)
         input_mask.append(f.input_mask)
         segment_ids.append(f.segment_ids)
-        label_id.append([f.label_id])                
-
-    all_input_ids = torch.tensor(input_ids, dtype=torch.long)
-    all_input_mask = torch.tensor(input_mask, dtype=torch.long)
-    all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
-    all_label_ids = torch.tensor(label_id, dtype=torch.long)
+        label_id.append(f.label_id)              
+    
+    seq_len = len(input_ids[0])
+    all_input_ids = torch.tensor(input_ids, dtype=torch.long).view(-1, 4, seq_len)
+    all_input_mask = torch.tensor(input_mask, dtype=torch.long).view(-1, 4, seq_len)
+    all_segment_ids = torch.tensor(segment_ids, dtype=torch.long).view(-1, 4, seq_len)
+    all_label_ids = torch.tensor(label_id, dtype=torch.long).view(-1, 4)[:, 0]
     return (all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
 
 
-def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
-    assert sum(opt_n_ls)==len(all_logits) and len(all_logits)==len(all_label_ids)
-    preds, labels = [], []
-    curr = 0
-    for opt_n in opt_n_ls:
-        logits = all_logits[curr : curr+opt_n]
-        label_ids = all_label_ids[curr : curr+opt_n]
-        assert sum(label_ids)==1
-        curr += opt_n
-        pred = np.argmax(logits)
-        label = label_ids.index(1)
-        preds.append(pred)
-        labels.append(label)
-    return preds, labels
-
-
-def evaluate(model, dataloader, opt_n_ls, device):
+def evaluate(model, dataloader, device):
     if not next(model.parameters()).is_cuda:
         model.to(device)
     model.eval()
     eval_loss = 0
     nb_eval_steps, nb_eval_examples = 0, 0
-    all_logits = []
+    all_preds = []
     all_label_ids = []
     for input_ids, input_mask, segment_ids, label_ids in dataloader:
         input_ids = input_ids.to(device)
@@ -401,9 +375,9 @@ def evaluate(model, dataloader, opt_n_ls, device):
                                 labels=label_ids)
         tmp_eval_loss = outputs[0]
         logits = outputs[1]
-        logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
+        preds = torch.argmax(logits, dim=1).detach().cpu().numpy().tolist()
         label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
-        all_logits.extend(logits)
+        all_preds.extend(preds)
         all_label_ids.extend(label_ids)
 
         eval_loss += tmp_eval_loss.mean().item()
@@ -413,8 +387,7 @@ def evaluate(model, dataloader, opt_n_ls, device):
 
     eval_loss = eval_loss / nb_eval_steps
 
-    preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls)
-    eval_accuracy = accuracy(preds, labels)
+    eval_accuracy = accuracy(all_preds, all_label_ids)
     return eval_loss, eval_accuracy
 
 
@@ -423,16 +396,20 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.bert = BertModel.from_pretrained(init_checkpoint)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, 2)
+        self.classifier = nn.Linear(config.hidden_size, 1)
 
     def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
+        seq_len = input_ids.size(2)
+        input_ids = input_ids.view(-1, seq_len)
+        token_type_ids = token_type_ids.view(-1, seq_len)
+        attention_mask = attention_mask.view(-1, seq_len)
         outputs = self.bert(input_ids=input_ids, 
                             token_type_ids=token_type_ids, 
                             attention_mask=attention_mask)
-        # pooler_output = outputs.pooler_output
         pooler_output = outputs[1]
         pooler_output = self.dropout(pooler_output)
         logits = self.classifier(pooler_output)
+        logits = logits.view(-1, 4)
         if labels is not None:
             labels = labels.view(-1)
             loss = F.cross_entropy(logits, labels)
@@ -568,7 +545,6 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    # bert_config = BertConfig.from_json_file(args.bert_config_file)
     bert_config = BertConfig.from_pretrained(args.init_checkpoint)
 
     if args.max_seq_length > bert_config.max_position_embeddings:
@@ -590,8 +566,6 @@ def main():
     processor = processors[task_name]()
     label_list = processor.get_labels()
 
-    # tokenizer = tokenization.FullTokenizer(
-    #     vocab_file=args.vocab_file, do_lower_case=args.do_lower_case)
     tokenizer = BertTokenizer.from_pretrained(args.init_checkpoint)
 
     train_examples = None
@@ -601,10 +575,7 @@ def main():
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
-    # model = BertForSequenceClassification(bert_config)
     model = Model(bert_config, args.init_checkpoint)
-    # if args.init_checkpoint is not None:
-    #     model.bert.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu'))
     model.to(device)
 
     if args.local_rank != -1:
@@ -661,6 +632,8 @@ def main():
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                if step>200:
+                    continue
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 loss, _ = model(input_ids=input_ids, 
@@ -682,7 +655,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
             # 每个epoch结束评估验证集
-            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device)
+            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, device)
 
             if args.do_train:
                 result = {'eval_loss': eval_loss,
@@ -712,7 +685,7 @@ def main():
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
         
-        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device)
+        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, device)
 
         if args.do_train:
             result = {'eval_loss': eval_loss,
@@ -753,7 +726,7 @@ def main():
         
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
-        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device)
+        test_loss, test_accuracy = evaluate(model, test_dataloader, device)
 
         if args.do_train:
             result = {'eval_loss': test_loss,
