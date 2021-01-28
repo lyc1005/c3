@@ -248,7 +248,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         label_map[label] = i
 
     features = []
-    for (ex_index, example) in enumerate(examples):
+    for (ex_index, example) in tqdm(enumerate(examples)):
         tokens_a = tokenizer.tokenize(example.text_a)
 
         tokens_b = tokenizer.tokenize(example.text_b)
@@ -298,16 +298,16 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         assert len(segment_ids) == max_seq_length
 
         label_id = label_map[example.label]
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                    [tokenization.printable_text(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: %s (id = %d)" % (example.label, label_id))
+        # if ex_index < 5:
+        #     logger.info("*** Example ***")
+        #     logger.info("guid: %s" % (example.guid))
+        #     logger.info("tokens: %s" % " ".join(
+        #             [tokenization.printable_text(x) for x in tokens]))
+        #     logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+        #     logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+        #     logger.info(
+        #             "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+        #     logger.info("label: %s (id = %d)" % (example.label, label_id))
 
         features.append(
                 InputFeatures(
