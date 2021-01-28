@@ -183,7 +183,7 @@ class RCProcessor(DataProcessor):
 
         for sid in range(3):
             data = []
-            with open("rc_data/"+["train_1.json", "dev_1.json", "test_1.json"][sid], "r", encoding="utf-8") as f:
+            with open("rc_data/"+["train_2.json", "dev_2.json", "test_2.json"][sid], "r", encoding="utf-8") as f:
                 data += json.load(f)
             if sid == 0:
                 random.shuffle(data)
@@ -404,7 +404,8 @@ def evaluate(model, dataloader, opt_n_ls, device, config=None, tokenizer=None):
         input_ids, input_mask = pad_to_window_size(
                         input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
         with torch.no_grad():
-            tmp_eval_loss, logits = model(input_ids=input_ids, 
+            tmp_eval_loss, logits = model(input_ids=input_ids,
+                                          token_type_ids=segment_ids, 
                                           attention_mask=input_mask, 
                                           labels=label_ids)
             logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
@@ -431,8 +432,9 @@ class Model(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, 2)
 
-    def forward(self, input_ids, attention_mask, labels=None):
+    def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
         _, pooler_output = self.encoder(input_ids=input_ids, 
+                                        token_type_ids=token_type_ids, 
                                         attention_mask=attention_mask)
         pooler_output = self.dropout(pooler_output)
         logits = self.classifier(pooler_output)
@@ -651,7 +653,8 @@ def main():
                 input_ids, input_mask, segment_ids, label_ids = batch
                 input_ids, input_mask = pad_to_window_size(
                 input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
-                loss, _ = model(input_ids=input_ids, 
+                loss, _ = model(input_ids=input_ids,
+                                token_type_ids=segment_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
                 if n_gpu > 1:

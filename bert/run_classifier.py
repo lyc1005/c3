@@ -183,7 +183,7 @@ class RCProcessor(DataProcessor):
 
         for sid in range(3):
             data = []
-            with open("rc_data/"+["train_1.json", "dev_1.json", "test_1.json"][sid], "r", encoding="utf-8") as f:
+            with open("rc_data/"+["train_2.json", "dev_2.json", "test_2.json"][sid], "r", encoding="utf-8") as f:
                 data += json.load(f)
             if sid == 0:
                 random.shuffle(data)
