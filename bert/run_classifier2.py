@@ -172,12 +172,12 @@ class RCProcessor(DataProcessor):
     def __init__(self):
         random.seed(42)
         self.D = [[], [], []]
-        self.opt_n = [[], [], []]
+        self.idx = [[], [], []]
         self.ans_mapper = {'A':0,'B':1,'C':2,'D':3}
 
         for sid in range(3):
             data = []
-            with open("rc_data/"+["train_2.json", "dev_2.json", "test_2.json"][sid], "r", encoding="utf-8") as f:
+            with open("rc_data/"+["train_1.json", "dev_1.json", "test_1.json"][sid], "r", encoding="utf-8") as f:
                 data += json.load(f)
             if sid == 0:
                 random.shuffle(data)
@@ -191,19 +191,19 @@ class RCProcessor(DataProcessor):
                         choices.append('')
                     d = [content, question] + choices + [answer]
                     self.D[sid].append(d)
-                    self.opt_n[sid].append(len(q['Choices']))
+                    self.idx[sid].append(q['Q_id'])
     
     def get_train_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self.D[0], "train"), self.opt_n[0]
+        return self._create_examples(self.D[0], "train"), self.idx[0]
 
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self.D[2], "test"), self.opt_n[2]
+        return self._create_examples(self.D[2], "test"), self.idx[2]
 
     def get_dev_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self.D[1], "dev"), self.opt_n[1]
+        return self._create_examples(self.D[1], "dev"), self.idx[1]
 
     def get_labels(self):
         """See base class."""
@@ -388,7 +388,7 @@ def evaluate(model, dataloader, device):
     eval_loss = eval_loss / nb_eval_steps
 
     eval_accuracy = accuracy(all_preds, all_label_ids)
-    return eval_loss, eval_accuracy
+    return eval_loss, eval_accuracy, all_preds
 
 
 class Model(nn.Module):
@@ -454,6 +454,9 @@ def main():
                         default='bert-base-chinese',
                         type=str,
                         help="Initial checkpoint key (search in https://huggingface.co/models)")
+    parser.add_argument("--resume_checkpoint",
+                        default=False,
+                        help="resume training from saved checkpoint file")
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -571,12 +574,15 @@ def main():
     train_examples = None
     num_train_steps = None
     if args.do_train:
-        train_examples, train_opt_n = processor.get_train_examples(args.data_dir)
+        train_examples, train_idx = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     model = Model(bert_config, args.init_checkpoint)
     model.to(device)
+
+    if args.resume_checkpoint:
+        model.load_state_dict(torch.load(args.resume_checkpoint))
 
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
@@ -598,7 +604,7 @@ def main():
     global_step = 0
 
     if args.do_eval:
-        eval_examples, dev_opt_n = processor.get_dev_examples(args.data_dir)
+        eval_examples, dev_idx = processor.get_dev_examples(args.data_dir)
         eval_features = convert_examples_to_features(
             eval_examples, label_list, args.max_seq_length, tokenizer)
 
@@ -653,7 +659,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
             # 每个epoch结束评估验证集
-            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, device)
+            eval_loss, eval_accuracy, eval_pred = evaluate(model, eval_dataloader, device)
 
             if args.do_train:
                 result = {'eval_loss': eval_loss,
@@ -683,7 +689,12 @@ def main():
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
         
-        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, device)
+        eval_loss, eval_accuracy, eval_pred = evaluate(model, eval_dataloader, device)
+        assert len(dev_idx)==len(eval_pred)
+        dev_results = np.array([dev_idx, eval_pred]).T.tolist()
+        with open(os.path.join(args.output_dir,'dev_output.csv'), 'w', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerows(dev_results)
 
         if args.do_train:
             result = {'eval_loss': eval_loss,
@@ -711,7 +722,7 @@ def main():
         #                 f.write(" ")
 
         # 评估测试集
-        test_examples, test_opt_n = processor.get_test_examples(args.data_dir)
+        test_examples, test_idx = processor.get_test_examples(args.data_dir)
         test_features = convert_examples_to_features(
             test_examples, label_list, args.max_seq_length, tokenizer)
 
@@ -724,8 +735,13 @@ def main():
         
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
-        test_loss, test_accuracy = evaluate(model, test_dataloader, device)
-
+        test_loss, test_accuracy, test_pred = evaluate(model, test_dataloader, device)
+        assert len(test_idx)==len(test_pred)
+        test_results = np.array([test_idx, test_pred]).T.tolist()
+        with open(os.path.join(args.output_dir,'test_output.csv'), 'w', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerows(test_results)
+  
         if args.do_train:
             result = {'eval_loss': test_loss,
                       'eval_accuracy': test_accuracy,
