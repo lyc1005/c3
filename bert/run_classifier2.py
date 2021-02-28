@@ -327,7 +327,7 @@ def _truncate_seq_tuple(tokens_a, tokens_b, tokens_c, max_length):
         if total_length <= max_length:
             break
         else:
-            tokens_a.pop()            
+            tokens_a.pop(len(tokens_a)//2)            
 
 
 def accuracy(preds, labels):
