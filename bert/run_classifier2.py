@@ -32,10 +32,13 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
-import tokenization
+# import tokenization
 # from modeling import BertConfig, BertForSequenceClassification
 from transformers import BertTokenizer, BertModel, BertConfig
+from transformers import AutoTokenizer, AutoConfig, AutoModel
 from optimization import BERTAdam
+from wobert import WoBertTokenizer
+from transformers import BertForMaskedLM
 
 import json
 
@@ -160,9 +163,9 @@ class c3Processor(DataProcessor):
 
             for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
-                text_a = tokenization.convert_to_unicode(data[i][0]) #content
-                text_b = tokenization.convert_to_unicode(data[i][k+2]) #option
-                text_c = tokenization.convert_to_unicode(data[i][1]) #question
+                text_a = data[i][0] #content
+                text_b = data[i][k+2] #option
+                text_c = data[i][1] #question
                 examples.append(
                         InputExample(guid=guid, text_a=text_a, text_b=text_b, label=answer, text_c=text_c))
             
@@ -177,7 +180,7 @@ class RCProcessor(DataProcessor):
 
         for sid in range(3):
             data = []
-            with open("rc_data/"+["train_1.json", "dev_1.json", "test_1.json"][sid], "r", encoding="utf-8") as f:
+            with open("rc_data/"+["train_2.json", "dev_2.json", "test_2.json"][sid], "r", encoding="utf-8") as f:
                 data += json.load(f)
             if sid == 0:
                 random.shuffle(data)
@@ -219,9 +222,9 @@ class RCProcessor(DataProcessor):
 
             for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
-                text_a = tokenization.convert_to_unicode(data[i][0]) #content
-                text_b = tokenization.convert_to_unicode(data[i][k+2]) #option
-                text_c = tokenization.convert_to_unicode(data[i][1]) #question
+                text_a = data[i][0] #content
+                text_b = data[i][k+2] #option
+                text_c = data[i][1] #question
                 examples.append(
                         InputExample(guid=guid, text_a=text_a, text_b=text_b, label=answer, text_c=text_c))
             
@@ -236,7 +239,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
     features = []
     for (ex_index, example) in tqdm(enumerate(examples)):
         tokens_a = tokenizer.tokenize(example.text_a)
-
+        print(tokens_a)
         tokens_b = tokenizer.tokenize(example.text_b)
 
         tokens_c = tokenizer.tokenize(example.text_c)
@@ -326,8 +329,12 @@ def _truncate_seq_tuple(tokens_a, tokens_b, tokens_c, max_length):
         total_length = len(tokens_a) + len(tokens_b) + len(tokens_c)
         if total_length <= max_length:
             break
+        elif tokens_a:
+            tokens_a.pop(len(tokens_a)//2) 
+        elif tokens_b:
+            tokens_b.pop()
         else:
-            tokens_a.pop(len(tokens_a)//2)            
+            tokens_c.pop()
 
 
 def accuracy(preds, labels):
@@ -394,7 +401,7 @@ def evaluate(model, dataloader, device):
 class Model(nn.Module):
     def __init__(self, config, init_checkpoint):
         super(Model, self).__init__()
-        self.bert = BertModel.from_pretrained(init_checkpoint)
+        self.bert = AutoModel.from_pretrained(init_checkpoint)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, 1)
 
@@ -548,7 +555,7 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    bert_config = BertConfig.from_pretrained(args.init_checkpoint)
+    bert_config = AutoConfig.from_pretrained(args.init_checkpoint)
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -569,7 +576,10 @@ def main():
     processor = processors[task_name]()
     label_list = processor.get_labels()
 
-    tokenizer = BertTokenizer.from_pretrained(args.init_checkpoint)
+    if 'wobert' in args.init_checkpoint:
+        tokenizer = WoBertTokenizer.from_pretrained(args.init_checkpoint)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.init_checkpoint)
 
     train_examples = None
     num_train_steps = None
