@@ -239,7 +239,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
     features = []
     for (ex_index, example) in tqdm(enumerate(examples)):
         tokens_a = tokenizer.tokenize(example.text_a)
-        print(tokens_a)
+        
         tokens_b = tokenizer.tokenize(example.text_b)
 
         tokens_c = tokenizer.tokenize(example.text_c)
