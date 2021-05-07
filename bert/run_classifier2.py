@@ -37,9 +37,8 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import BertTokenizer, BertModel, BertConfig
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from optimization import BERTAdam
-from wobert import WoBertTokenizer
 from transformers import BertForMaskedLM
-
+# from wobert import WoBertTokenizer
 import json
 
 # n_class = 4
@@ -646,11 +645,12 @@ def main():
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
             tr_loss = 0
+            acc = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                loss, _ = model(input_ids=input_ids, 
+                loss, logits = model(input_ids=input_ids, 
                                 token_type_ids=segment_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
@@ -658,8 +658,14 @@ def main():
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
+
+                preds = torch.argmax(logits, dim=1)
+                acc += (preds==label_ids).sum().item()/preds.size(0)
+
                 if step%100==0:
                     logger.info("  loss = %f", loss)
+                    logger.info("  acc = %f", acc/100)
+                    acc = 0
                 loss.backward()
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
