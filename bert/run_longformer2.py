@@ -32,14 +32,18 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
-import tokenization
+# import tokenization
+# from modeling import BertConfig, BertForSequenceClassification
 from transformers import BertTokenizer, BertModel, BertConfig
+from transformers import AutoTokenizer, AutoConfig, AutoModel
+from optimization import BERTAdam
+from transformers import BertForMaskedLM
 from longformer.longformer import *
 from longformer.sliding_chunks import pad_to_window_size
-from optimization import BERTAdam
-
+# from wobert import WoBertTokenizer
 import json
 
+# n_class = 4
 reverse_order = False
 sa_step = False
 
@@ -117,7 +121,7 @@ class c3Processor(DataProcessor):
         for sid in range(3):
             data = []
             for subtask in ["d", "m"]:
-                with open("data/c3-"+subtask+"-"+["train.json", "dev.json", "test.json"][sid], "r", encoding="utf8") as f:
+                with open("c3_data/c3-"+subtask+"-"+["train.json", "dev.json", "test.json"][sid], "r", encoding="utf8") as f:
                     data += json.load(f)
             if sid == 0:
                 random.shuffle(data)
@@ -126,8 +130,8 @@ class c3Processor(DataProcessor):
                     d = ['\n'.join(data[i][0]).lower(), data[i][1][j]["question"].lower()]
                     for k in range(len(data[i][1][j]["choice"])):
                         d += [data[i][1][j]["choice"][k].lower()]  
-                    # for k in range(len(data[i][1][j]["choice"]), 4):
-                        # d += ['']
+                    for k in range(len(data[i][1][j]["choice"]), 4):
+                        d += ['']
                     d += [data[i][1][j]["answer"].lower()] 
                     self.D[sid] += [d]
                     self.opt_n[sid].append(len(data[i][1][j]["choice"]))
@@ -160,26 +164,20 @@ class c3Processor(DataProcessor):
 
             for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
-                text_a = tokenization.convert_to_unicode(data[i][0])
-                text_b = tokenization.convert_to_unicode(data[i][k+2])
-                text_c = tokenization.convert_to_unicode(data[i][1])
-                if k == answer:
-                    label = '1'
-                else:
-                    label = '0'
-                tokenization.convert_to_unicode(label)
+                text_a = data[i][0] #content
+                text_b = data[i][k+2] #option
+                text_c = data[i][1] #question
                 examples.append(
-                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, text_c=text_c))
+                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=answer, text_c=text_c))
             
         return examples
-
 
 class RCProcessor(DataProcessor):
     def __init__(self):
         random.seed(42)
         self.D = [[], [], []]
-        self.opt_n = [[], [], []]
-        self.ans_mapper = {'A':0,'B':1,'C':2,'D':3,'E':4}
+        self.idx = [[], [], []]
+        self.ans_mapper = {'A':0,'B':1,'C':2,'D':3}
 
         for sid in range(3):
             data = []
@@ -192,25 +190,28 @@ class RCProcessor(DataProcessor):
                 for q_idx, q in enumerate(passage['Questions']):
                     question = q['Question']
                     answer = q['Choices'][self.ans_mapper[q['Answer']]]
-                    d = [content, question] + q['Choices'] + [answer]
+                    choices = q['Choices']
+                    while len(choices) < 4:
+                        choices.append('')
+                    d = [content, question] + choices + [answer]
                     self.D[sid].append(d)
-                    self.opt_n[sid].append(len(q['Choices']))
+                    self.idx[sid].append(q['Q_id'])
     
     def get_train_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self.D[0], "train"), self.opt_n[0]
+        return self._create_examples(self.D[0], "train"), self.idx[0]
 
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self.D[2], "test"), self.opt_n[2]
+        return self._create_examples(self.D[2], "test"), self.idx[2]
 
     def get_dev_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self.D[1], "dev"), self.opt_n[1]
+        return self._create_examples(self.D[1], "dev"), self.idx[1]
 
     def get_labels(self):
         """See base class."""
-        return ["0", "1", "2", "3", "4"]
+        return ["0", "1", "2", "3"]
 
     def _create_examples(self, data, set_type):
         """Creates examples for the training and dev sets."""
@@ -219,21 +220,14 @@ class RCProcessor(DataProcessor):
             for k in range(len(data[i])-3):
                 if data[i][2+k] == data[i][-1]:
                     answer = k
-                    
-            # label = tokenization.convert_to_unicode(answer)
 
             for k in range(len(data[i])-3):
                 guid = "%s-%s-%s" % (set_type, i, k)
-                text_a = tokenization.convert_to_unicode(data[i][0])
-                text_b = tokenization.convert_to_unicode(data[i][k+2])
-                text_c = tokenization.convert_to_unicode(data[i][1])
-                if k == answer:
-                    label = '1'
-                else:
-                    label = '0'
-                tokenization.convert_to_unicode(label)
+                text_a = data[i][0] #content
+                text_b = data[i][k+2] #option
+                text_c = data[i][1] #question
                 examples.append(
-                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, text_c=text_c))
+                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=answer, text_c=text_c))
             
         return examples
 
@@ -243,14 +237,10 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
 
     print("#examples", len(examples))
 
-    label_map = {}
-    for (i, label) in enumerate(label_list):
-        label_map[label] = i
-
     features = []
     for (ex_index, example) in tqdm(enumerate(examples)):
         tokens_a = tokenizer.tokenize(example.text_a)
-
+        
         tokens_b = tokenizer.tokenize(example.text_b)
 
         tokens_c = tokenizer.tokenize(example.text_c)
@@ -285,7 +275,6 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
-        # input_mask = [1] * len(input_ids)
 
         # Zero-pad up to the sequence length.
         while len(input_ids) < max_seq_length:
@@ -297,7 +286,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
 
-        label_id = label_map[example.label]
+        label_id = example.label
         # if ex_index < 5:
         #     logger.info("*** Example ***")
         #     logger.info("guid: %s" % (example.guid))
@@ -346,8 +335,12 @@ def _truncate_seq_tuple(tokens_a, tokens_b, tokens_c, max_length):
         total_length = len(tokens_a) + len(tokens_b) + len(tokens_c)
         if total_length <= max_length:
             break
+        elif tokens_a:
+            tokens_a.pop(len(tokens_a)//2) 
+        elif tokens_b:
+            tokens_b.pop()
         else:
-            tokens_a.pop()            
+            tokens_c.pop()
 
 
 def accuracy(preds, labels):
@@ -364,80 +357,76 @@ def construct_input_data(features):
         input_ids.append(f.input_ids)
         input_mask.append(f.input_mask)
         segment_ids.append(f.segment_ids)
-        label_id.append([f.label_id])                
-
-    all_input_ids = torch.tensor(input_ids, dtype=torch.long)
-    all_input_mask = torch.tensor(input_mask, dtype=torch.long)
-    all_segment_ids = torch.tensor(segment_ids, dtype=torch.long)
-    all_label_ids = torch.tensor(label_id, dtype=torch.long)
+        label_id.append(f.label_id)              
+    
+    seq_len = len(input_ids[0])
+    all_input_ids = torch.tensor(input_ids, dtype=torch.long).view(-1, 4, seq_len)
+    all_input_mask = torch.tensor(input_mask, dtype=torch.long).view(-1, 4, seq_len)
+    all_segment_ids = torch.tensor(segment_ids, dtype=torch.long).view(-1, 4, seq_len)
+    all_label_ids = torch.tensor(label_id, dtype=torch.long).view(-1, 4)[:, 0]
     return (all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
 
 
-def collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls):
-    assert sum(opt_n_ls)==len(all_logits) and len(all_logits)==len(all_label_ids)
-    preds, labels = [], []
-    curr = 0
-    for opt_n in opt_n_ls:
-        logits = all_logits[curr : curr+opt_n]
-        label_ids = all_label_ids[curr : curr+opt_n]
-        assert sum(label_ids)==1
-        curr += opt_n
-        pred = np.argmax(logits)
-        label = label_ids.index(1)
-        preds.append(pred)
-        labels.append(label)
-    return preds, labels
-
-
-def evaluate(model, dataloader, opt_n_ls, device, config=None, tokenizer=None):
+def evaluate(model, dataloader, device):
     if not next(model.parameters()).is_cuda:
         model.to(device)
     model.eval()
     eval_loss = 0
     nb_eval_steps, nb_eval_examples = 0, 0
-    all_logits = []
+    all_preds = []
     all_label_ids = []
     for input_ids, input_mask, segment_ids, label_ids in dataloader:
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
+        segment_ids = segment_ids.to(device)
         label_ids = label_ids.to(device)
-        input_ids, input_mask = pad_to_window_size(
-                        input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
+        # input_ids, input_mask = pad_to_window_size(
+        #                 input_ids, input_mask, bert_config.attention_window[0], tokenizer.pad_token_id)
+
         with torch.no_grad():
-            tmp_eval_loss, logits = model(input_ids=input_ids,
-                                          token_type_ids=segment_ids, 
-                                          attention_mask=input_mask, 
-                                          labels=label_ids)
-            logits = F.softmax(logits, dim=1).detach().cpu().numpy()[:,1].tolist()
-            label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
-            all_logits.extend(logits)
-            all_label_ids.extend(label_ids)
+            outputs = model(input_ids=input_ids, 
+                                token_type_ids=segment_ids, 
+                                attention_mask=input_mask, 
+                                labels=label_ids)
+        tmp_eval_loss = outputs[0]
+        logits = outputs[1]
+        preds = torch.argmax(logits, dim=1).detach().cpu().numpy().tolist()
+        label_ids = label_ids.view(-1).detach().cpu().numpy().tolist()
+        all_preds.extend(preds)
+        all_label_ids.extend(label_ids)
 
-            eval_loss += tmp_eval_loss.mean().item()
+        eval_loss += tmp_eval_loss.mean().item()
 
-            nb_eval_examples += input_ids.size(0)
-            nb_eval_steps += 1
+        nb_eval_examples += input_ids.size(0)
+        nb_eval_steps += 1
 
     eval_loss = eval_loss / nb_eval_steps
 
-    preds, labels = collapse_logits_to_answer(all_logits, all_label_ids, opt_n_ls)
-    eval_accuracy = accuracy(preds, labels)
-    return eval_loss, eval_accuracy
+    eval_accuracy = accuracy(all_preds, all_label_ids)
+    return eval_loss, eval_accuracy, all_preds
 
 
 class Model(nn.Module):
     def __init__(self, config, init_checkpoint):
         super(Model, self).__init__()
-        self.encoder = Longformer.from_pretrained(init_checkpoint, config=config)
+        self.bert = Longformer.from_pretrained(init_checkpoint, config=config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, 2)
+        self.classifier = nn.Linear(config.hidden_size, 1)
 
     def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
-        _, pooler_output = self.encoder(input_ids=input_ids, 
-                                        token_type_ids=token_type_ids, 
-                                        attention_mask=attention_mask)
+        seq_len = input_ids.size(2)
+        print('here!',input_ids.shape)
+        input_ids = input_ids.view(-1, seq_len)
+        print('here!!!',token_type_ids.shape)
+        token_type_ids = token_type_ids.view(-1, seq_len)
+        attention_mask = attention_mask.view(-1, seq_len)
+        outputs = self.bert(input_ids=input_ids, 
+                            token_type_ids=token_type_ids, 
+                            attention_mask=attention_mask)
+        pooler_output = outputs[1]
         pooler_output = self.dropout(pooler_output)
         logits = self.classifier(pooler_output)
+        logits = logits.view(-1, 4)
         if labels is not None:
             labels = labels.view(-1)
             loss = F.cross_entropy(logits, labels)
@@ -455,11 +444,22 @@ def main():
                         type=str,
                         required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
+    # parser.add_argument("--bert_config_file",
+    #                     default=None,
+    #                     type=str,
+    #                     required=True,
+    #                     help="The config json file corresponding to the pre-trained BERT model. \n"
+    #                          "This specifies the model architecture.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
                         required=True,
                         help="The name of the task to train.")
+    # parser.add_argument("--vocab_file",
+    #                     default=None,
+    #                     type=str,
+    #                     required=True,
+    #                     help="The vocabulary file that the BERT model was trained on.")
     parser.add_argument("--output_dir",
                         default=None,
                         type=str,
@@ -471,6 +471,9 @@ def main():
                         default='schen/longformer-chinese-base-4096',
                         type=str,
                         help="Initial checkpoint key (search in https://huggingface.co/models)")
+    parser.add_argument("--resume_checkpoint",
+                        default=False,
+                        help="resume training from saved checkpoint file")
     parser.add_argument("--do_lower_case",
                         default=False,
                         action='store_true',
@@ -562,13 +565,13 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    config = LongformerConfig.from_pretrained(args.init_checkpoint)
-    config.attention_mode = 'sliding_chunks' #'sliding_chunks','tvm'
+    bert_config = LongformerConfig.from_pretrained(args.init_checkpoint)
+    bert_config.attention_mode = 'sliding_chunks' #'sliding_chunks','tvm'
 
-    if args.max_seq_length > config.max_position_embeddings:
+    if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
             "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}".format(
-            args.max_seq_length, config.max_position_embeddings))
+            args.max_seq_length, bert_config.max_position_embeddings))
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
         if args.do_train:
@@ -589,12 +592,15 @@ def main():
     train_examples = None
     num_train_steps = None
     if args.do_train:
-        train_examples, train_opt_n = processor.get_train_examples(args.data_dir)
+        train_examples, train_idx = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
-    model = Model(config, args.init_checkpoint)
+    model = Model(bert_config, args.init_checkpoint)
     model.to(device)
+
+    if args.resume_checkpoint:
+        model.load_state_dict(torch.load(args.resume_checkpoint))
 
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
@@ -611,11 +617,12 @@ def main():
     optimizer = BERTAdam(optimizer_parameters,
                          lr=args.learning_rate,
                          warmup=args.warmup_proportion)
+                        #  t_total=num_train_steps)
 
     global_step = 0
 
     if args.do_eval:
-        eval_examples, dev_opt_n = processor.get_dev_examples(args.data_dir)
+        eval_examples, dev_idx = processor.get_dev_examples(args.data_dir)
         eval_features = convert_examples_to_features(
             eval_examples, label_list, args.max_seq_length, tokenizer)
 
@@ -647,13 +654,14 @@ def main():
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
             tr_loss = 0
+            acc = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
-                input_ids, input_mask = pad_to_window_size(
-                input_ids, input_mask, config.attention_window[0], tokenizer.pad_token_id)
-                loss, _ = model(input_ids=input_ids,
+                # input_ids, input_mask = pad_to_window_size(
+                # input_ids, input_mask, bert_config.attention_window[0], tokenizer.pad_token_id)
+                loss, logits = model(input_ids=input_ids, 
                                 token_type_ids=segment_ids, 
                                 attention_mask=input_mask, 
                                 labels=label_ids)
@@ -661,8 +669,14 @@ def main():
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
+
+                preds = torch.argmax(logits, dim=1)
+                acc += (preds==label_ids).sum().item()/preds.size(0)
+
                 if step%100==0:
                     logger.info("  loss = %f", loss)
+                    logger.info("  acc = %f", acc/100)
+                    acc = 0
                 loss.backward()
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
@@ -672,7 +686,7 @@ def main():
                     model.zero_grad()
                     global_step += 1
             # 每个epoch结束评估验证集
-            eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device, config=config, tokenizer=tokenizer)
+            eval_loss, eval_accuracy, eval_pred = evaluate(model, eval_dataloader, device)
 
             if args.do_train:
                 result = {'eval_loss': eval_loss,
@@ -702,7 +716,12 @@ def main():
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
         
-        eval_loss, eval_accuracy = evaluate(model, eval_dataloader, dev_opt_n, device, config=config, tokenizer=tokenizer)
+        eval_loss, eval_accuracy, eval_pred = evaluate(model, eval_dataloader, device)
+        assert len(dev_idx)==len(eval_pred)
+        dev_results = np.array([dev_idx, eval_pred]).T.tolist()
+        with open(os.path.join(args.output_dir,'dev_output.csv'), 'w', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerows(dev_results)
 
         if args.do_train:
             result = {'eval_loss': eval_loss,
@@ -730,7 +749,7 @@ def main():
         #                 f.write(" ")
 
         # 评估测试集
-        test_examples, test_opt_n = processor.get_test_examples(args.data_dir)
+        test_examples, test_idx = processor.get_test_examples(args.data_dir)
         test_features = convert_examples_to_features(
             test_examples, label_list, args.max_seq_length, tokenizer)
 
@@ -743,8 +762,13 @@ def main():
         
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size)
 
-        test_loss, test_accuracy = evaluate(model, test_dataloader, test_opt_n, device, config=config, tokenizer=tokenizer)
-
+        test_loss, test_accuracy, test_pred = evaluate(model, test_dataloader, device)
+        assert len(test_idx)==len(test_pred)
+        test_results = np.array([test_idx, test_pred]).T.tolist()
+        with open(os.path.join(args.output_dir,'test_output.csv'), 'w', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerows(test_results)
+  
         if args.do_train:
             result = {'eval_loss': test_loss,
                       'eval_accuracy': test_accuracy,
